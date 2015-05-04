@@ -5,10 +5,13 @@ include_once "templates/base.php";
 session_start();
 
 require_once realpath(dirname(__FILE__) . '/../src/Google/autoload.php');
+$file = "gmail.json";
 
-$client_id = '206852684132-oh01arhhmvo8bgvag9695u1d90cnospj.apps.googleusercontent.com';
-$client_secret = 'H8YFVQ1Om-_v7JTRcpo9TcIT';
-$redirect_uri = 'http://minedosbrothers.servegame.com:8081/Dropbox/DropServer/sites/crossbots_novo/site/envia.php';
+$arrayJson = json_decode(file_get_contents($file));
+ 
+$client_id = $arrayJson->web->client_id;
+$client_secret = $arrayJson->web->client_secret;
+$redirect_uri = $arrayJson->web->redirect_uris[0];
 
 $client = new Google_Client();
 $client->setClientId($client_id);
@@ -17,31 +20,56 @@ $client->setClientSecret($client_secret);
 $client->setRedirectUri($redirect_uri);  //url que vai apos fazer a autenticacao
 $client->addScope("https://mail.google.com/"); //funcoes que voce declara que vai acessar
 
-if (isset($_REQUEST['logout'])) {
-    unset($_SESSION['access_token']);
-}
-
 if (isset($_GET['code'])) {
     $client->authenticate($_GET['code']);
     $access_token = $client->getAccessToken();
     $tokens_decoded = json_decode($access_token);
     $refreshToken = $tokens_decoded->refresh_token;
+    $client->getRefreshToken();
+    if($refreshToken){
+        escreveJson($file, '"web":{','"refreshToken":"'. $refreshToken . '",');
+        unset($_SESSION['access_token']);
+        echo ("Refresh token = " . $refreshToken); 
+        $botao = '<input type="button" name="leremail" value="Voltar"  onclick="window.open(';
+        $botao .= "'contato.html','_parent'";
+        $botao .= ')" />';
+        echo $botao;
+        die("<br>Refresh token salvo com sucesso");
+    }    
     $redirect = 'http://' . $_SERVER['HTTP_HOST'] . $_SERVER['PHP_SELF'];
     header('Location: ' . filter_var($redirect, FILTER_SANITIZE_URL));
 }
-
+ 
 if (isset($_SESSION['access_token']) && $_SESSION['access_token']) {
     $client->setAccessToken($_SESSION['access_token']);
 } else {
     $authUrl = $client->createAuthUrl();
 }
-
+ 
 if ($client->isAccessTokenExpired()) {
-    $client->refreshToken("1/y7G_RFERSvoNrO9P_rSBzk6bb91q8rzPmPe1foQDdaQMEudVrK5jSpoR30zcRFq6");
-    //$authUrl = $client->createAuthUrl();
-    //header('Location: ' . filter_var($authUrl, FILTER_SANITIZE_URL));
+    $refresh = $arrayJson->web->refreshToken;
+    if ($refresh){
+        $client->refreshToken($refresh);
+    }
+    else {
+        if ($client->getRefreshToken()){
+            escreveJson($file, '"web":{','"refreshToken":"'. $client->getRefreshToken() . '",');
+        }
+        else{
+            $authUrl = $client->createAuthUrl();
+            header('Location: ' . filter_var($authUrl, FILTER_SANITIZE_URL));
+        }
+    }    
 }
 
+function escreveJson($file, $cod, $string){
+    $json = file_get_contents($file);
+    $replace = str_replace($cod, $cod . $string ,$json);
+    $final = fopen($file,'w+');
+    fwrite($final, $replace);
+    fclose($final);
+}
+ 
 function formataTexto($string){
     $sanitizedData = strtr($string,'-_', '+/');
     $decodedMessage = base64_decode($sanitizedData);
@@ -65,8 +93,19 @@ function lerEmailById($client, $messageId){
 
     foreach ($headers as $header){
         $retornoTemporario['header'][$header->name] = $header->value;
-    }   
-
+    }
+    foreach($parts as $part){
+        if ($part->filename != null && strlen($part->filename) > 0) {
+            $filename = $part->filename;
+            $attId = $part->body->attachmentId;
+            $attachPart = $service->users_messages_attachments->get("me", $messageId, $attId);
+            $fileByteArray = formataTexto($attachPart->data);
+            
+            $arquivo = fopen(__DIR__ . "/../../anexos_email/" . $filename,'wrx');
+            fwrite($arquivo, $fileByteArray);
+            fclose($arquivo);
+        }
+    }
     $retornoTemporario['body'] = formataTexto($parts[1]['body']->data);
     return $retornoTemporario;
 }
@@ -99,20 +138,19 @@ function lerEmail($client, $tag){
 
 function enviarEmail($client, $texto){
     $service = new Google_Service_Gmail($client);   
-    
+     
     $strMailContent = $texto["message"];
     $strMailTextVersion = strip_tags($strMailContent, '');
-
+ 
     $strRawMessage = "";
     $boundary = uniqid(rand(), true);
     $subjectCharset = $charset = 'utf-8';
     $strToMail = $texto["to"];
-    $strSesFromEmail = 'samuel.zaduski@gmail.com';
     $strSubject = $texto["subject"]; // . date('M d, Y h:i:s A');
-
+    $strSesFromEmail = $texto["from"];
     $strRawMessage .= 'To: ' . " <" . $strToMail . ">" . "\r\n";
     $strRawMessage .= 'From: ' . $texto["nomeRemetente"] . "<" . $strSesFromEmail . ">" . "\r\n";
-
+ 
     $strRawMessage .= 'Subject: =?' . $subjectCharset . '?B?' . base64_encode($strSubject) . "?=\r\n";
     $strRawMessage .= 'MIME-Version: 1.0' . "\r\n";
     $strRawMessage .= 'Content-type: Multipart/Alternative; boundary="' . $boundary . '"' . "\r\n";
@@ -153,10 +191,12 @@ function enviarEmail($client, $texto){
     $service->users_messages->send("samuel.zaduski@gmail.com", $msg);
 }
 
-$dadosEmail = array(
+$emailFrom = $arrayJson->web->client_email;
+    $dadosEmail = array(
     "message" =>  " Email do contato: " . trim($_POST['email']) . "<br/><br/>". $_POST['mensagem'],
+    "from" => $emailFrom,
     "nomeRemetente" => $_POST['nome'],
-    "to" => "crossbots@gmail.com",
+    "to" => trim($_POST['to']),
     "subject" => $_POST['assunto'],
         );
 
